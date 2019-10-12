@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="WARN">
+    <Appenders>
+        <Console name="Console" target="SYSTEM_OUT">
+            <!--  2012-11-02 14:34:02,123 DEBUG [main] v.t.b.s.App:methodName:17 Your message here -->
+            <PatternLayout pattern="%highlight{%d{DEFAULT} %-5p [%-5.15t] %40c{1.}:%-4L %msg%n}" charset="UTF-8"/>
+        </Console>
+
+        <Sentry name="Sentry"  />
+    </Appenders>
+    <Loggers>
+        <Root level="all">
+            <AppenderRef ref="Console" level="INFO"/>
+            <AppenderRef ref="Sentry" level="ERROR" />
+        </Root>
+    </Loggers>
+</Configuration>
