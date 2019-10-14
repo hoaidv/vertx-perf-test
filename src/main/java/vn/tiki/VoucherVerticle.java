@@ -8,32 +8,27 @@ import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
+import io.vertx.mysqlclient.MySQLPool;
+import io.vertx.sqlclient.*;
 import lombok.extern.log4j.Log4j2;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.util.function.Supplier;
 
 @Log4j2
 public class VoucherVerticle extends AbstractVerticle {
 
     private final DslJson<Object> json = new DslJson<>(Settings.withRuntime().allowArrayFormat(true).includeServiceLoader());
     private Vertx vertx;
-    private Supplier<Connection> connectionProvider;
-    private Connection connection;
+    private MySQLPool connectionPool;
 
-    public VoucherVerticle(Vertx vertx, Supplier<Connection> connectionProvider) {
+    public VoucherVerticle(Vertx vertx, MySQLPool connectionPool) {
         this.vertx = vertx;
-        this.connectionProvider = connectionProvider;
+        this.connectionPool = connectionPool;
     }
 
     @Override
     public void start() {
-        this.connection = connectionProvider.get();
         Router router = Router.router(vertx);
         router.route("/vouchers/:id")
                 .handler(this::voucherHandler)
@@ -51,8 +46,8 @@ public class VoucherVerticle extends AbstractVerticle {
     }
 
     @Override
-    public void stop() throws Exception {
-        connection.close();
+    public void stop() {
+
     }
 
     private void voucherHandler(RoutingContext routingContext) {
@@ -65,39 +60,47 @@ public class VoucherVerticle extends AbstractVerticle {
         }
 
         int voucherId = Integer.parseInt(rawVoucherId);
-        response.end(findVoucher(voucherId));
+
+        findVoucher(response, voucherId);
     }
 
-    private Buffer findVoucher(int voucherId) {
-        try (PreparedStatement statement = connection.prepareStatement("SELECT * FROM voucher WHERE id = ?")) {
-            statement.setInt(1, voucherId);
-            statement.execute();
-            return readFindVoucherResult(statement);
-        } catch (SQLException | IOException e) {
-            log.error(e);
-            return errorToBuffer(0x0004, e.toString());
-        }
-    }
-
-    private Buffer readFindVoucherResult(PreparedStatement statement) throws SQLException, IOException {
-        try (ResultSet resultSet = statement.getResultSet()) {
-            if (resultSet.next()) {
-                return Buffer.buffer(resultSetToVoucher(resultSet));
+    private void findVoucher(HttpServerResponse response, int voucherId) {
+        connectionPool.getConnection(connectionResult -> {
+            if (connectionResult.succeeded()) {
+                SqlConnection connection = connectionResult.result();
+                connection.preparedQuery("SELECT * FROM voucher WHERE id = ?", Tuple.of(voucherId), queryResult -> {
+                    if (queryResult.succeeded()) {
+                        RowSet<Row> rows = queryResult.result();
+                        RowIterator<Row> iterator = rows.iterator();
+                        if (iterator.hasNext()) {
+                            response.end(readFindVoucherResult(iterator.next()));
+                        } else {
+                            response.end(errorToBuffer(0x0002, "No voucher found."));
+                        }
+                    } else {
+                        response.end(errorToBuffer(0x0003, queryResult.cause().toString()));
+                    }
+                    connection.close();
+                });
+            } else {
+                response.end(errorToBuffer(0x0004, connectionResult.cause().toString()));
             }
-            return errorToBuffer(0x0003, "No voucher found.");
-        }
+        });
     }
 
-    private byte[] resultSetToVoucher(ResultSet resultSet) throws SQLException, IOException {
-        Voucher voucher = new Voucher(
-                resultSet.getInt("id"),
-                resultSet.getString("code"),
-                resultSet.getInt("quantity")
-        );
-
-        ByteArrayOutputStream outputStream =  new ByteArrayOutputStream();
-        json.serialize(voucher, outputStream);
-        return outputStream.toByteArray();
+    private Buffer readFindVoucherResult(Row row) {
+        try {
+            Voucher voucher = new Voucher(
+                    row.getInteger("id"),
+                    row.getBuffer("code").toString(),
+                    row.getInteger("quantity")
+            );
+            ByteArrayOutputStream outputStream =  new ByteArrayOutputStream();
+            json.serialize(voucher, outputStream);
+            return Buffer.buffer(outputStream.toByteArray());
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to serialize data", e);
+        }
     }
 
     private Buffer errorToBuffer(int code, String error) {

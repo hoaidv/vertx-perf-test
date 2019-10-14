@@ -47,6 +47,12 @@
             <version>3.4.1</version>
         </dependency>
 
+        <dependency>
+            <groupId>io.vertx</groupId>
+            <artifactId>vertx-mysql-client</artifactId>
+            <version>3.8.2</version>
+        </dependency>
+
         <!--   Data   -->
 
         <dependency>
@@ -121,4 +127,33 @@
             </plugin>
         </plugins>
     </build>
+
+    <repositories>
+
+        <repository>
+            <id>oss.sonatype/snapshots</id>
+            <url>http://oss.sonatype.org/content/repositories/snapshots</url>
+            <layout>default</layout>
+            <releases>
+                <enabled>false</enabled>
+            </releases>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+        </repository>
+
+        <repository>
+            <id>oss.sonatype/releases</id>
+            <url>http://oss.sonatype.org/content/repositories/releases/</url>
+            <layout>default</layout>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+
+    </repositories>
+
 </project>

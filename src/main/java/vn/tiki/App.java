@@ -1,44 +1,36 @@
 package vn.tiki;
 
-import com.zaxxer.hikari.HikariConfig;
-import com.zaxxer.hikari.HikariDataSource;
+import io.vertx.core.DeploymentOptions;
 import io.vertx.core.Vertx;
 import io.vertx.core.VertxOptions;
+import io.vertx.core.impl.cpu.CpuCoreSensor;
+import io.vertx.mysqlclient.MySQLConnectOptions;
+import io.vertx.mysqlclient.MySQLPool;
+import io.vertx.sqlclient.PoolOptions;
 import lombok.extern.log4j.Log4j2;
 
-import java.sql.SQLException;
-
-/**
- * Hello world!
- */
 @Log4j2
 public class App {
 
-    private static HikariDataSource dataSource;
+    private static MySQLPool mySQLPool;
     private static Vertx vertx;
 
     public static void main(String[] args) {
-        System.out.println("Hello World!");
+        int deploymentSize = CpuCoreSensor.availableProcessors();
 
-        int deploymentSize = 15;
+        log.info("Available logical processors = Deployment size = {}", deploymentSize);
 
-        dataSource = setupConnectionPool(deploymentSize);
-        vertx = Vertx.vertx(new VertxOptions().setWorkerPoolSize(40))
+        mySQLPool = setupConnectionPool(deploymentSize);
+        vertx = Vertx.vertx(new VertxOptions())
                 .exceptionHandler(App::vertxExceptionHandler);
 
-        for (int i = 0; i < deploymentSize; i++) {
-            vertx.deployVerticle(new VoucherVerticle(vertx, () -> {
-                try {
-                    return dataSource.getConnection();
-                } catch (SQLException e) {
-                    throw new RuntimeException("Cannot get connection");
-                }
-            }));
-        }
+        vertx.deployVerticle(
+                () -> new VoucherVerticle(vertx, mySQLPool),
+                new DeploymentOptions().setInstances(deploymentSize));
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             vertx.close();
-            dataSource.close();
+            mySQLPool.close();
         }));
     }
 
@@ -46,30 +38,15 @@ public class App {
         log.warn("Unhandled exception", t);
     }
 
-    private static HikariDataSource setupConnectionPool(int maxPoolSize) {
-        HikariConfig config = new HikariConfig();
-        config.setJdbcUrl("jdbc:mysql://" +
-                "localhost:3306/" +
-                "test_db?" +
-                "allowMultiQueries=true&" +
-                "autoReconnect=true&" +
-                "autoReconnectForPools=true&" +
-                "useJDBCCompliantTimezoneShift=true&" +
-                "useLegacyDatetimeCode=false&" +
-                "serverTimezone=UTC&" +
-                "zeroDateTimeBehavior=convertToNull&" +
-                "tinyInt1isBit=false&" +
-                "useSSL=false"
-        );
+    private static MySQLPool setupConnectionPool(int maxPoolSize) {
+        MySQLConnectOptions connectOptions = new MySQLConnectOptions()
+                .setHost("localhost").setPort(3306).setDatabase("test_db")
+                .setUser("test_user").setPassword("pipi")
+                .setReconnectAttempts(5);
 
-        config.setMaximumPoolSize(maxPoolSize);
+        PoolOptions poolOptions = new PoolOptions()
+                .setMaxSize(maxPoolSize);
 
-        config.setUsername("test_user");
-        config.setPassword("pipi");
-        config.addDataSourceProperty("cachePrepStmts", "true");
-        config.addDataSourceProperty("prepStmtCacheSize", "250");
-        config.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
-
-        return new HikariDataSource(config);
+        return MySQLPool.pool(connectOptions, poolOptions);
     }
 }
