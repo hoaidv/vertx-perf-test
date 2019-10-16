@@ -2,37 +2,47 @@ package vn.tiki;
 
 import com.dslplatform.json.DslJson;
 import com.dslplatform.json.runtime.Settings;
-import io.vertx.core.AbstractVerticle;
-import io.vertx.core.Vertx;
-import io.vertx.core.buffer.Buffer;
-import io.vertx.core.http.HttpServerResponse;
-import io.vertx.ext.web.Router;
-import io.vertx.ext.web.RoutingContext;
+import io.reactivex.BackpressureStrategy;
+import io.reactivex.Flowable;
+import io.reactivex.disposables.Disposable;
 import io.vertx.mysqlclient.MySQLPool;
+import io.vertx.reactivex.core.AbstractVerticle;
+import io.vertx.reactivex.core.buffer.Buffer;
+import io.vertx.reactivex.core.http.HttpServerResponse;
+import io.vertx.reactivex.ext.web.Router;
+import io.vertx.reactivex.ext.web.RoutingContext;
 import io.vertx.sqlclient.*;
 import lombok.extern.log4j.Log4j2;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 @Log4j2
 public class VoucherVerticle extends AbstractVerticle {
 
     private final DslJson<Object> json = new DslJson<>(Settings.withRuntime().allowArrayFormat(true).includeServiceLoader());
-    private Vertx vertx;
     private MySQLPool connectionPool;
+    private Disposable disposable;
 
-    public VoucherVerticle(Vertx vertx, MySQLPool connectionPool) {
-        this.vertx = vertx;
+    public VoucherVerticle(MySQLPool connectionPool) {
         this.connectionPool = connectionPool;
     }
 
     @Override
     public void start() {
         Router router = Router.router(vertx);
-        router.route("/vouchers/:id")
-                .handler(this::voucherHandler)
-                .failureHandler(rtx -> log.error(rtx.failure()));
+
+        Flowable<RoutingContext> flowableRoutingContexts = Flowable.create(flowableEmitter -> {
+            router.route("/vouchers/:id")
+                    .handler(flowableEmitter::onNext)
+                    .failureHandler(rtx -> log.error(rtx.failure()));
+        }, BackpressureStrategy.BUFFER);
+
+        disposable = flowableRoutingContexts
+                .buffer(2, TimeUnit.MILLISECONDS)
+                .subscribe(this::handleBatchedRequests);
 
         vertx.createHttpServer()
                 .requestHandler(router)
@@ -47,10 +57,20 @@ public class VoucherVerticle extends AbstractVerticle {
 
     @Override
     public void stop() {
-
+        if (!disposable.isDisposed()) {
+            disposable.dispose();
+        }
     }
 
-    private void voucherHandler(RoutingContext routingContext) {
+    private void handleBatchedRequests(List<RoutingContext> requests) {
+        if (requests.isEmpty()) return;
+
+        for (RoutingContext request : requests) {
+            handleVoucherFind(request);
+        }
+    }
+
+    private void handleVoucherFind(RoutingContext routingContext) {
         HttpServerResponse response = routingContext.response();
         String rawVoucherId = routingContext.pathParam("id");
 
@@ -95,7 +115,7 @@ public class VoucherVerticle extends AbstractVerticle {
                     row.getBuffer("code").toString(),
                     row.getInteger("quantity")
             );
-            ByteArrayOutputStream outputStream =  new ByteArrayOutputStream();
+            ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
             json.serialize(voucher, outputStream);
             return Buffer.buffer(outputStream.toByteArray());
         } catch (IOException e) {
@@ -105,7 +125,7 @@ public class VoucherVerticle extends AbstractVerticle {
 
     private Buffer errorToBuffer(int code, String error) {
         try {
-            ByteArrayOutputStream outputStream =  new ByteArrayOutputStream();
+            ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
             json.serialize(new Error(code, error), outputStream);
             return Buffer.buffer(outputStream.toByteArray());
         } catch (IOException e) {

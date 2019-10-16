@@ -25,7 +25,7 @@ public class App {
                 .exceptionHandler(App::vertxExceptionHandler);
 
         vertx.deployVerticle(
-                () -> new VoucherVerticle(vertx, mySQLPool),
+                () -> new VoucherVerticle(mySQLPool),
                 new DeploymentOptions().setInstances(deploymentSize));
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
