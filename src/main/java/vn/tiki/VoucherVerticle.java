@@ -66,22 +66,18 @@ public class VoucherVerticle extends AbstractVerticle {
         if (requests.isEmpty()) return;
 
         for (RoutingContext request : requests) {
-            handleVoucherFind(request);
+            HttpServerResponse response = request.response();
+            String rawVoucherId = request.pathParam("id");
+
+            if (rawVoucherId == null || rawVoucherId.isBlank()) {
+                response.end(errorToBuffer(0x0001, "Missing voucher id."));
+                continue;
+            }
+
+            int voucherId = Integer.parseInt(rawVoucherId);
+
+            findVoucher(response, voucherId);
         }
-    }
-
-    private void handleVoucherFind(RoutingContext routingContext) {
-        HttpServerResponse response = routingContext.response();
-        String rawVoucherId = routingContext.pathParam("id");
-
-        if (rawVoucherId == null || rawVoucherId.isBlank()) {
-            response.end(errorToBuffer(0x0001, "Missing voucher id."));
-            return;
-        }
-
-        int voucherId = Integer.parseInt(rawVoucherId);
-
-        findVoucher(response, voucherId);
     }
 
     private void findVoucher(HttpServerResponse response, int voucherId) {
