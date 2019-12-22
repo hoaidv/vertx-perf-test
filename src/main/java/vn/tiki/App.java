@@ -1,36 +1,41 @@
 package vn.tiki;
 
+import com.github.jasync.sql.db.Connection;
+import com.github.jasync.sql.db.mysql.MySQLConnectionBuilder;
 import io.vertx.core.DeploymentOptions;
 import io.vertx.core.Vertx;
 import io.vertx.core.VertxOptions;
 import io.vertx.core.impl.cpu.CpuCoreSensor;
-import io.vertx.mysqlclient.MySQLConnectOptions;
-import io.vertx.mysqlclient.MySQLPool;
-import io.vertx.sqlclient.PoolOptions;
 import lombok.extern.log4j.Log4j2;
+
+import java.util.ArrayList;
+import java.util.List;
 
 @Log4j2
 public class App {
 
-    private static MySQLPool mySQLPool;
     private static Vertx vertx;
 
     public static void main(String[] args) {
         int deploymentSize = CpuCoreSensor.availableProcessors();
+        List<Connection> connections = new ArrayList<>();
 
         log.info("Available logical processors = Deployment size = {}", deploymentSize);
 
-        mySQLPool = setupConnectionPool(deploymentSize);
         vertx = Vertx.vertx(new VertxOptions())
                 .exceptionHandler(App::vertxExceptionHandler);
 
         vertx.deployVerticle(
-                () -> new VoucherVerticle(mySQLPool),
+                () -> {
+                    var connection = createConnectionPool();
+                    connections.add(connection);
+                    return new VoucherVerticle(connection);
+                },
                 new DeploymentOptions().setInstances(deploymentSize));
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             vertx.close();
-            mySQLPool.close();
+            connections.forEach(Connection::disconnect);
         }));
     }
 
@@ -38,15 +43,13 @@ public class App {
         log.warn("Unhandled exception", t);
     }
 
-    private static MySQLPool setupConnectionPool(int maxPoolSize) {
-        MySQLConnectOptions connectOptions = new MySQLConnectOptions()
-                .setHost("localhost").setPort(3306).setDatabase("test_db")
-                .setUser("test_user").setPassword("pipi")
-                .setReconnectAttempts(5);
-
-        PoolOptions poolOptions = new PoolOptions()
-                .setMaxSize(maxPoolSize);
-
-        return MySQLPool.pool(connectOptions, poolOptions);
+    private static Connection createConnectionPool() {
+        return MySQLConnectionBuilder.createConnectionPool(
+                "jdbc:mysql://" +
+                        "0.0.0.0:" +
+                        "3306/" +
+                        "test_db?" +
+                        "user=test_user&" +
+                        "password=pipi");
     }
 }
