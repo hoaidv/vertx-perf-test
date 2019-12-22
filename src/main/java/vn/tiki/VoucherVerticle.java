@@ -8,7 +8,6 @@ import io.reactivex.disposables.Disposable;
 import io.vertx.mysqlclient.MySQLPool;
 import io.vertx.reactivex.core.AbstractVerticle;
 import io.vertx.reactivex.core.buffer.Buffer;
-import io.vertx.reactivex.core.http.HttpServerResponse;
 import io.vertx.reactivex.ext.web.Router;
 import io.vertx.reactivex.ext.web.RoutingContext;
 import io.vertx.sqlclient.*;
@@ -16,8 +15,13 @@ import lombok.extern.log4j.Log4j2;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.util.List;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+
+import static java.util.stream.Collectors.joining;
 
 @Log4j2
 public class VoucherVerticle extends AbstractVerticle {
@@ -41,7 +45,7 @@ public class VoucherVerticle extends AbstractVerticle {
         }, BackpressureStrategy.BUFFER);
 
         disposable = flowableRoutingContexts
-                .buffer(2, TimeUnit.MILLISECONDS)
+                .buffer(1, TimeUnit.MILLISECONDS)
                 .subscribe(this::handleBatchedRequests);
 
         vertx.createHttpServer()
@@ -65,67 +69,116 @@ public class VoucherVerticle extends AbstractVerticle {
     private void handleBatchedRequests(List<RoutingContext> requests) {
         if (requests.isEmpty()) return;
 
-        for (RoutingContext request : requests) {
-            HttpServerResponse response = request.response();
+        Map<Integer, RoutingContext> voucherIdToRequest = new HashMap<>();
+        List<RoutingContext> invalidRequests = new ArrayList<>();
+
+        for (RoutingContext request: requests) {
             String rawVoucherId = request.pathParam("id");
-
-            if (rawVoucherId == null || rawVoucherId.isBlank()) {
-                response.end(errorToBuffer(0x0001, "Missing voucher id."));
-                continue;
+            try {
+                int voucherId = Integer.parseInt(rawVoucherId);
+                voucherIdToRequest.put(voucherId, request);
+            } catch (NumberFormatException ignored) {
+                invalidRequests.add(request);
             }
-
-            int voucherId = Integer.parseInt(rawVoucherId);
-
-            findVoucher(response, voucherId);
         }
+
+        for (RoutingContext request: invalidRequests) {
+            request.response().end(errorTextToBuffer(0x0001, "Invalid voucher id."));
+        }
+
+        findVouchers(voucherIdToRequest.keySet()).handleAsync((voucherMap, throwable) -> {
+            if (throwable != null) {
+                var errorText = printStackTrace(throwable);
+                for (RoutingContext request: voucherIdToRequest.values()) {
+                    request.response().end(errorTextToBuffer(0x0003, errorText));
+                }
+            } else {
+                for (Map.Entry<Integer, RoutingContext> requestEntry : voucherIdToRequest.entrySet()) {
+                    int voucherId = requestEntry.getKey();
+                    RoutingContext request = requestEntry.getValue();
+                    Voucher voucher = voucherMap.get(voucherId);
+                    if (voucher != null) {
+                        request.response().end(pojoToBuffer(voucher));
+                    } else {
+                        request.response().end(errorTextToBuffer(0x0002, "Voucher not found"));
+                    }
+                }
+            }
+            return null;
+        });
     }
 
-    private void findVoucher(HttpServerResponse response, int voucherId) {
+    private CompletableFuture<Map<Integer, Voucher>> findVouchers(Collection<Integer> voucherIds) {
+        var futureVoucherMap = new CompletableFuture<Map<Integer, Voucher>>();
+
         connectionPool.getConnection(connectionResult -> {
             if (connectionResult.succeeded()) {
                 SqlConnection connection = connectionResult.result();
-                connection.preparedQuery("SELECT * FROM voucher WHERE id = ?", Tuple.of(voucherId), queryResult -> {
+                String idsList = voucherIds.stream().map(Objects::toString).collect(joining(", "));
+                connection.preparedQuery("SELECT * FROM voucher WHERE id IN (?)", Tuple.of(idsList), queryResult -> {
                     if (queryResult.succeeded()) {
-                        RowSet<Row> rows = queryResult.result();
-                        RowIterator<Row> iterator = rows.iterator();
-                        if (iterator.hasNext()) {
-                            response.end(readFindVoucherResult(iterator.next()));
-                        } else {
-                            response.end(errorToBuffer(0x0002, "No voucher found."));
+                        RowIterator<Row> iterator = queryResult.result().iterator();
+                        Map<Integer, Voucher> voucherMap = new HashMap<>();
+
+                        while (iterator.hasNext()) {
+                            Row row = iterator.next();
+                            Voucher voucher = new Voucher(
+                                    row.getInteger("id"),
+                                    row.getBuffer("code").toString(),
+                                    row.getInteger("quantity")
+                            );
+                            voucherMap.put(voucher.id, voucher);
                         }
+
+                        futureVoucherMap.complete(voucherMap);
                     } else {
-                        response.end(errorToBuffer(0x0003, queryResult.cause().toString()));
+                        futureVoucherMap.completeExceptionally(queryResult.cause());
                     }
                     connection.close();
                 });
             } else {
-                response.end(errorToBuffer(0x0004, connectionResult.cause().toString()));
+                futureVoucherMap.completeExceptionally(connectionResult.cause());
             }
         });
+
+        return futureVoucherMap;
     }
 
-    private Buffer readFindVoucherResult(Row row) {
+    private Buffer pojoToBuffer(Object pojo) {
         try {
-            Voucher voucher = new Voucher(
-                    row.getInteger("id"),
-                    row.getBuffer("code").toString(),
-                    row.getInteger("quantity")
-            );
             ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-            json.serialize(voucher, outputStream);
+            json.serialize(pojo, outputStream);
             return Buffer.buffer(outputStream.toByteArray());
         } catch (IOException e) {
-            throw new RuntimeException("Failed to serialize data", e);
+            return throwableToBuffer(0x0004, e);
         }
     }
 
-    private Buffer errorToBuffer(int code, String error) {
+    private Buffer errorTextToBuffer(int code, String error) {
         try {
             ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
             json.serialize(new Error(code, error), outputStream);
             return Buffer.buffer(outputStream.toByteArray());
         } catch (IOException e) {
+            return throwableToBuffer(0x0004, e);
+        }
+    }
+
+    @SuppressWarnings("SameParameterValue")
+    private Buffer throwableToBuffer(int code, Throwable throwable) {
+        try {
+            ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+            Error error = new Error(code, printStackTrace(throwable));
+            json.serialize(error, outputStream);
+            return Buffer.buffer(outputStream.toByteArray());
+        } catch (IOException e) {
             return Buffer.buffer(e.toString());
         }
+    }
+
+    private static String printStackTrace(Throwable throwable) {
+        StringWriter errorWriter = new StringWriter();
+        throwable.printStackTrace(new PrintWriter(errorWriter));
+        return errorWriter.toString();
     }
 }
