@@ -21,6 +21,7 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
+import static java.lang.String.format;
 import static java.util.stream.Collectors.joining;
 
 @Log4j2
@@ -115,7 +116,8 @@ public class VoucherVerticle extends AbstractVerticle {
             if (connectionResult.succeeded()) {
                 SqlConnection connection = connectionResult.result();
                 String idsList = voucherIds.stream().map(Objects::toString).collect(joining(", "));
-                connection.preparedQuery("SELECT * FROM voucher WHERE id IN (?)", Tuple.of(idsList), queryResult -> {
+                String findVouchersSql = format("SELECT * FROM voucher WHERE id IN (%s)", idsList);
+                connection.query(findVouchersSql, queryResult -> {
                     if (queryResult.succeeded()) {
                         RowIterator<Row> iterator = queryResult.result().iterator();
                         Map<Integer, Voucher> voucherMap = new HashMap<>();
@@ -144,9 +146,19 @@ public class VoucherVerticle extends AbstractVerticle {
         return futureVoucherMap;
     }
 
+    private static ThreadLocal<ByteArrayOutputStream> outputStreams = new ThreadLocal<>();
+
     private Buffer pojoToBuffer(Object pojo) {
         try {
-            ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+            ByteArrayOutputStream outputStream = outputStreams.get();
+
+            if (outputStream == null) {
+                outputStream = new ByteArrayOutputStream();
+                outputStreams.set(outputStream);
+            }
+
+            outputStream.reset();
+
             json.serialize(pojo, outputStream);
             return Buffer.buffer(outputStream.toByteArray());
         } catch (IOException e) {
