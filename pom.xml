@@ -48,12 +48,6 @@
             <version>3.4.1</version>
         </dependency>
 
-        <dependency>
-            <groupId>io.vertx</groupId>
-            <artifactId>vertx-mysql-client</artifactId>
-            <version>${vertx.version}</version>
-        </dependency>
-
         <!--   Data   -->
 
         <dependency>
